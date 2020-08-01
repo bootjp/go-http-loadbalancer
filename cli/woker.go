@@ -18,23 +18,50 @@ type loadBalancer struct {
 	Director    func(req *http.Request)
 }
 
-func (l *loadBalancer) IsAllowScheme(url *url.URL) bool {
-	//check Scheme
-	//var state bool
-	//if scheme == "" && req.TLS != nil {
-	//	req.URL.Scheme = "https"
-	//}
-	// localhost is always empty scheme
-	if url.Host == "localhost" {
-		return true
-	}
-	for _, s := range l.AllowScheme {
-		if s == url.Scheme {
-			return true
-		}
-	}
-	return false
+//func (l *loadBalancer) IsAllowScheme(url *url.URL) bool {
+//	//check Scheme
+//	//var state bool
+//	//if scheme == "" && req.TLS != nil {
+//	//	req.URL.Scheme = "https"
+//	//}
+//	// localhost is always empty scheme
+//	if url.Host == "localhost" {
+//		return true
+//	}
+//	for _, s := range l.AllowScheme {
+//		if s == url.Scheme {
+//			return true
+//		}
+//	}
+//	return false
+//}
+
+var hopHeaders = []string{
+	"connection",
+	"keep-alive",
+	"proxy-authenticate",
+	"proxy-authorization",
+	"te",
+	"trailers",
+	"transfer-encoding",
+	"upgrade",
 }
+
+//func (l *loadBalancer) removeHopHeader(header http.Header) http.Header {
+//	for _, v := range hopHeaders {
+//		hv := header.Get(v)
+//		if hv == "" {
+//			continue
+//		}
+//		// support gRPC Te header.
+//		// see https://github.com/golang/go/issues/21096
+//		if strings.ToLower(v) == "Te" && hv == "trailers" {
+//			continue
+//		}
+//		header.Del(v)
+//	}
+//	return header
+//}
 
 func (l *loadBalancer) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	// inspired https://github.com/golang/go/blob/master/src/net/http/httputil/reverseproxy.go
@@ -65,7 +92,20 @@ func (l *loadBalancer) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	l.Director(outreq)
 	outreq.Close = false
 
-	// todo remove hop header  RFC 2616, section 13.5.1 https://tools.ietf.org/html/rfc2616#section-13.5.1
+	// RFC 2616, section 13.5.1 https://tools.ietf.org/html/rfc2616#section-13.5.1
+	for _, v := range hopHeaders {
+		hv := outreq.Header.Get(v)
+		if hv == "" {
+			continue
+		}
+		// support gRPC Te header.
+		// see https://github.com/golang/go/issues/21096
+		if v == "Te" && hv == "trailers" {
+			continue
+		}
+		outreq.Header.Del(v)
+	}
+
 	res, err := transport.RoundTrip(outreq)
 	if err != nil {
 		log.Println(err)
@@ -74,12 +114,18 @@ func (l *loadBalancer) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		err = res.Body.Close()
 	}()
 
-	// todo remove hop header  RFC 2616, section 13.5.1 https://tools.ietf.org/html/rfc2616#section-13.5.1
+	// RFC 2616, section 13.5.1 https://tools.ietf.org/html/rfc2616#section-13.5.1
+	for _, v := range hopHeaders {
+		res.Header.Del(v)
+	}
+
+	// copyHeader
 	for k, v := range res.Header {
 		for _, vv := range v {
 			w.Header().Add(k, vv)
 		}
 	}
+	w.WriteHeader(res.StatusCode)
 
 	if _, err = io.Copy(w, res.Body); err != nil {
 		log.Println(err)
@@ -103,8 +149,6 @@ func NewLoadBalancer() *loadBalancer {
 }
 
 // todo
-// deleteHopHEADR
-// add forwarded header
 // error handling
 // add original Director
 // run benchmark
