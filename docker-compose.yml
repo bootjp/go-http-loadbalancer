@@ -2,7 +2,11 @@
 
 version: "3.6"
 services:
-  backend:
+  backend_a:
     image: nginx
     ports:
-    - 3000:80
+      - 3000:80
+  backend_b:
+    image: nginx
+    ports:
+      - 3030:80
