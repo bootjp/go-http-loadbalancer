@@ -9,39 +9,26 @@ import (
 	"net/url"
 	"strings"
 	"sync/atomic"
+	"time"
 )
 
 // todo extended url.URL. struct
-type Nodes []url.URL
-
-type Algorithm = func(req *http.Request)
-
-type loadBalancer struct {
-	AllowScheme []string
-	Backends    Nodes
-	Transport   http.RoundTripper
-	Algorithm   Algorithm
-	backends    uint32
-	req         uint32
+type Node struct {
+	url.URL
+	Alive bool
 }
 
-//func (l *loadBalancer) IsAllowScheme(url *url.URL) bool {
-//	//check Scheme
-//	//var state bool
-//	//if scheme == "" && req.TLS != nil {
-//	//	req.URL.Scheme = "https"
-//	//}
-//	// localhost is always empty scheme
-//	if url.Host == "localhost" {
-//		return true
-//	}
-//	for _, s := range l.AllowScheme {
-//		if s == url.Scheme {
-//			return true
-//		}
-//	}
-//	return false
-//}
+type BalanceAlg = func(req *http.Request)
+
+type loadBalancer struct {
+	AllowScheme    []string
+	Backends       []Node
+	Transport      http.RoundTripper
+	BalanceAlg     BalanceAlg
+	CheckNodeAlive func(ctx context.Context, node *Node)
+
+	req uint32
+}
 
 var hopHeaders = []string{
 	"connection",
@@ -53,22 +40,6 @@ var hopHeaders = []string{
 	"transfer-encoding",
 	"upgrade",
 }
-
-//func (l *loadBalancer) removeHopHeader(header http.Header) http.Header {
-//	for _, v := range hopHeaders {
-//		hv := header.Get(v)
-//		if hv == "" {
-//			continue
-//		}
-//		// support gRPC Te header.
-//		// see https://github.com/golang/go/issues/21096
-//		if strings.ToLower(v) == "Te" && hv == "trailers" {
-//			continue
-//		}
-//		header.Del(v)
-//	}
-//	return header
-//}
 
 func (l *loadBalancer) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	// inspired https://github.com/golang/go/blob/master/src/net/http/httputil/reverseproxy.go
@@ -96,7 +67,7 @@ func (l *loadBalancer) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	}
 
 	outreq := req.Clone(ctx)
-	l.Algorithm(outreq)
+	l.BalanceAlg(outreq)
 	outreq.Close = false
 
 	// RFC 2616, section 13.5.1 https://tools.ietf.org/html/rfc2616#section-13.5.1
@@ -163,6 +134,18 @@ func (l *loadBalancer) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	}
 }
 
+func (l *loadBalancer) RunCheckNode() {
+	for {
+		ctx := context.TODO()
+
+		for _, n := range l.Backends {
+			context.WithTimeout(ctx, time.Second*10)
+			go l.CheckNodeAlive(ctx, &n)
+		}
+		time.Sleep(5 * time.Minute)
+	}
+}
+
 func copyHeader(dst http.Header, src http.Header) {
 	for k, v := range src {
 		for _, vv := range v {
@@ -171,27 +154,17 @@ func copyHeader(dst http.Header, src http.Header) {
 	}
 }
 
-func NewLoadBalancer(node Nodes) *loadBalancer {
-
-	backend := len(node)
-
-	//_ = httputil.NewSingleHostReverseProxy(&u).Director
-
+func NewLoadBalancer(node []Node) *loadBalancer {
 	return &loadBalancer{
 		AllowScheme: []string{"https", "http"},
 		Backends:    node,
 		Transport:   nil,
-		backends:    uint32(backend),
 		req:         uint32(0),
-		// access golang reverse proxy Algorithm
-		// TODO fix
-
 	}
 }
 
 // todo
 // error handling
-// add original Algorithm
 // run benchmark
 
 func main() {
@@ -204,9 +177,20 @@ func main() {
 		Scheme: "http",
 		Host:   "localhost:3030",
 	}
-	backends := []url.URL{u, u2}
-	l := NewLoadBalancer(backends)
-	l.Algorithm = func(req *http.Request) {
+
+	var nodes = []Node{
+		{
+			u,
+			false,
+		},
+		{
+			u2,
+			false,
+		},
+	}
+
+	l := NewLoadBalancer(nodes)
+	l.BalanceAlg = func(req *http.Request) {
 		pick := l.Backends[l.req]
 
 		fmt.Println(l.req, uint32(len(l.Backends)-1))
@@ -229,6 +213,39 @@ func main() {
 			req.Header.Set("User-Agent", "")
 		}
 	}
+
+	l.CheckNodeAlive = func(ctx context.Context, node *Node) {
+
+		fmt.Printf("check alive node  %v\n", node)
+		select {
+		case <-ctx.Done():
+		default:
+			req, err := http.NewRequestWithContext(ctx, "GET", node.Scheme+"://"+node.URL.Host+node.URL.Path+node.RawQuery, nil)
+			if err != nil {
+				log.Println(err)
+				fmt.Printf("check alive node  %v\n", node)
+				node.Alive = false
+				return
+			}
+			client := &http.Client{}
+			res, err := client.Do(req)
+			if err != nil {
+				node.Alive = false
+				fmt.Printf("check alive node  %v\n", node)
+				log.Println(err)
+				return
+			}
+			defer func() {
+				err = res.Body.Close()
+			}()
+			node.Alive = true
+			fmt.Printf("alive node %v\n", node)
+			return
+		}
+	}
+
+	go l.RunCheckNode()
+
 	err := http.ListenAndServe(":8080", l)
 	if err != nil {
 		log.Fatalln(err)
