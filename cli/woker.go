@@ -6,10 +6,13 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/textproto"
 	"net/url"
 	"strings"
 	"sync/atomic"
 	"time"
+
+	"golang.org/x/net/http/httpguts"
 )
 
 // todo extended url.URL. struct
@@ -39,6 +42,7 @@ var hopHeaders = []string{
 	"trailers",
 	"transfer-encoding",
 	"upgrade",
+	"Proxy-Connection",
 }
 
 func (l *loadBalancer) ServeHTTP(w http.ResponseWriter, req *http.Request) {
@@ -67,8 +71,22 @@ func (l *loadBalancer) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	}
 
 	outreq := req.Clone(ctx)
+	if req.ContentLength == 0 {
+		outreq.Body = nil // Issue 16036: nil Body for http.Transport retries
+	}
+	if outreq.Header == nil {
+		outreq.Header = make(http.Header) // Issue 33142: historical behavior was to always allocate
+	}
 	l.BalanceAlg(outreq)
 	outreq.Close = false
+	reqUpType := upgradeType(outreq.Header)
+
+	f := outreq.Header.Get("Connection")
+	for _, sf := range strings.Split(f, ",") {
+		if sf = textproto.TrimString(sf); sf != "" {
+			outreq.Header.Del(sf)
+		}
+	}
 
 	// RFC 2616, section 13.5.1 https://tools.ietf.org/html/rfc2616#section-13.5.1
 	for _, v := range hopHeaders {
@@ -83,14 +101,23 @@ func (l *loadBalancer) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		}
 		outreq.Header.Del(v)
 	}
+	if reqUpType != "" {
+		outreq.Header.Set("Connection", "Upgrade")
+		outreq.Header.Set("Upgrade", reqUpType)
+	}
 
 	res, err := transport.RoundTrip(outreq)
 	if err != nil {
 		log.Println(err)
 	}
-	defer func() {
-		err = res.Body.Close()
-	}()
+
+	for _, f := range res.Header["Connection"] {
+		for _, sf := range strings.Split(f, ",") {
+			if sf = textproto.TrimString(sf); sf != "" {
+				res.Header.Del(sf)
+			}
+		}
+	}
 
 	// RFC 2616, section 13.5.1 https://tools.ietf.org/html/rfc2616#section-13.5.1
 	for _, v := range hopHeaders {
@@ -112,6 +139,7 @@ func (l *loadBalancer) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	if _, err = io.Copy(w, res.Body); err != nil {
 		log.Println(err)
 	}
+	res.Body.Close()
 
 	if len(res.Trailer) > 0 {
 		// Force chunking if we saw a response trailer.
@@ -152,6 +180,13 @@ func copyHeader(dst http.Header, src http.Header) {
 			dst.Add(k, vv)
 		}
 	}
+}
+
+func upgradeType(h http.Header) string {
+	if !httpguts.HeaderValuesContainsToken(h["Connection"], "Upgrade") {
+		return ""
+	}
+	return strings.ToLower(h.Get("Upgrade"))
 }
 
 func NewLoadBalancer(node []Node) *loadBalancer {
