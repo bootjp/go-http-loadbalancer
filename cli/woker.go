@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"io/ioutil"
 	"log"
 	"net/http"
 	"net/textproto"
@@ -15,10 +16,16 @@ import (
 	"golang.org/x/net/http/httpguts"
 )
 
-// todo extended url.URL. struct
+type HealthCheck struct {
+	Endpoint           url.URL
+	ExpectedStatusCode int
+	ExpectedResponse   string
+}
+
 type Node struct {
 	url.URL
-	Alive bool
+	Alive       bool
+	HealthCheck HealthCheck
 }
 
 type BalanceAlg = func(req *http.Request)
@@ -215,12 +222,22 @@ func main() {
 
 	var nodes = []Node{
 		{
-			u,
-			false,
+			URL:   u,
+			Alive: false,
+			HealthCheck: HealthCheck{
+				u,
+				200,
+				"<!DOCTYPE html>\n<html>\n<head>\n<title>Welcome to nginx!</title>\n<style>\n    body {\n        width: 35em;\n        margin: 0 auto;\n        font-family: Tahoma, Verdana, Arial, sans-serif;\n    }\n</style>\n</head>\n<body>\n<h1>Welcome to nginx!</h1>\n<p>If you see this page, the nginx web server is successfully installed and\nworking. Further configuration is required.</p>\n\n<p>For online documentation and support please refer to\n<a href=\"http://nginx.org/\">nginx.org</a>.<br/>\nCommercial support is available at\n<a href=\"http://nginx.com/\">nginx.com</a>.</p>\n\n<p><em>Thank you for using nginx.</em></p>\n</body>\n</html>\n",
+			},
 		},
 		{
-			u2,
-			false,
+			URL:   u2,
+			Alive: false,
+			HealthCheck: HealthCheck{
+				u,
+				200,
+				"<!DOCTYPE html>\n<html>\n<head>\n<title>Welcome to nginx!</title>\n<style>\n    body {\n        width: 35em;\n        margin: 0 auto;\n        font-family: Tahoma, Verdana, Arial, sans-serif;\n    }\n</style>\n</head>\n<body>\n<h1>Welcome to nginx!</h1>\n<p>If you see this page, the nginx web server is successfully installed and\nworking. Further configuration is required.</p>\n\n<p>For online documentation and support please refer to\n<a href=\"http://nginx.org/\">nginx.org</a>.<br/>\nCommercial support is available at\n<a href=\"http://nginx.com/\">nginx.com</a>.</p>\n\n<p><em>Thank you for using nginx.</em></p>\n</body>\n</html>\n",
+			},
 		},
 	}
 
@@ -255,10 +272,15 @@ func main() {
 		select {
 		case <-ctx.Done():
 		default:
-			req, err := http.NewRequestWithContext(ctx, "GET", node.Scheme+"://"+node.URL.Host+node.URL.Path+node.RawQuery, nil)
+			req, err := http.NewRequestWithContext(
+				ctx,
+				"GET",
+				node.HealthCheck.Endpoint.String(),
+				nil,
+			)
 			if err != nil {
 				log.Println(err)
-				fmt.Printf("check alive node  %v\n", node)
+				fmt.Printf("not alive node  %v\n", node)
 				node.Alive = false
 				return
 			}
@@ -266,13 +288,25 @@ func main() {
 			res, err := client.Do(req)
 			if err != nil {
 				node.Alive = false
-				fmt.Printf("check alive node  %v\n", node)
+				fmt.Printf("not alive node  %v\n", node)
 				log.Println(err)
 				return
 			}
 			defer func() {
 				err = res.Body.Close()
 			}()
+			if res.StatusCode != node.HealthCheck.ExpectedStatusCode {
+				fmt.Printf("not alive node  %v reason %s \n", node, "UnExpectedStatusCode")
+				node.Alive = false
+				return
+			}
+			b, _ := ioutil.ReadAll(res.Body)
+			if string(b) != node.HealthCheck.ExpectedResponse {
+				fmt.Printf("not alive node  %v reason %s \n", node, "UnExpectedResponse")
+				node.Alive = false
+				return
+			}
+
 			node.Alive = true
 			fmt.Printf("alive node %v\n", node)
 			return
