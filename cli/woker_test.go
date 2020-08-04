@@ -1,7 +1,6 @@
 package main
 
 import (
-	"fmt"
 	"io/ioutil"
 	"net/http"
 	"net/http/httptest"
@@ -135,30 +134,15 @@ func TestLBHeader(t *testing.T) {
 
 func TestLBNodeCrash(t *testing.T) {
 	const backendResponse = "I am the backend"
-	const backendStatus = 502
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == "GET" && r.FormValue("mode") == "hangup" {
 			c, _, _ := w.(http.Hijacker).Hijack()
 			c.Close()
 			return
 		}
-		w.Header().Set("Trailers", "not a special header field name")
-		w.Header().Set("Trailer", "X-Trailer")
-		w.Header().Set("X-Foo", "bar")
-		w.Header().Set("Upgrade", "foo")
-		w.Header().Set("fakeHopHeader", "foo")
-		w.Header().Add("X-Multi-Value", "foo")
-		w.Header().Add("X-Multi-Value", "bar")
-		http.SetCookie(w, &http.Cookie{Name: "flavor", Value: "chocolateChip"})
-		w.WriteHeader(backendStatus)
-		w.Write([]byte(backendResponse))
-		w.Header().Set("X-Trailer", "trailer_value")
-		w.Header().Set(http.TrailerPrefix+"X-Unannounced-Trailer", "unannounced_trailer_value")
 	}))
 	defer backend.Close()
-	fmt.Println(backend.URL)
 	u, _ := url.Parse(backend.URL)
-	fmt.Println(u)
 
 	h := HealthCheck{
 		*u,
@@ -185,5 +169,45 @@ func TestLBNodeCrash(t *testing.T) {
 	if res.StatusCode != http.StatusBadGateway {
 		t.Errorf("request to bad proxy = %v; want 502 StatusBadGateway", res.Status)
 	}
-	time.Sleep(1 * time.Second)
+}
+
+func TestLBNodeTimeout(t *testing.T) {
+	const backendResponse = "I am the backend"
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "GET" && r.FormValue("mode") == "hangup" {
+			c, _, _ := w.(http.Hijacker).Hijack()
+			time.Sleep(15 * time.Second)
+			c.Close()
+			return
+		}
+	}))
+	defer backend.Close()
+	u, _ := url.Parse(backend.URL)
+
+	h := HealthCheck{
+		*u,
+		200,
+		backendResponse,
+		1 * time.Second,
+	}
+	var nodes = []*Node{
+		NewNode(*u, h),
+	}
+
+	balancer := NewLoadBalancer(nodes)
+	frontend := httptest.NewServer(balancer)
+	defer frontend.Close()
+	frontendClient := frontend.Client()
+
+	getReq, _ := http.NewRequest("GET", frontend.URL+"/?mode=hangup", nil)
+	getReq.Close = true
+	res, err := frontendClient.Do(getReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res.Body.Close()
+
+	if res.StatusCode != http.StatusGatewayTimeout {
+		t.Errorf("request to bad proxy = %v; want 502 StatusBadGateway", res.Status)
+	}
 }
