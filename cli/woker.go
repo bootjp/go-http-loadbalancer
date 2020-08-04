@@ -115,7 +115,10 @@ func (l *loadBalancer) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 
 	res, err := transport.RoundTrip(outreq)
 	if err != nil {
+		w.WriteHeader(http.StatusBadGateway)
+		//w.Write(http.ba)
 		log.Println(err)
+		return
 	}
 
 	for _, f := range res.Header["Connection"] {
