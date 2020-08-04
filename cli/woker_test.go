@@ -42,7 +42,7 @@ func TestLBHeader(t *testing.T) {
 		if c := r.Header.Get("Proxy-Connection"); c != "" {
 			t.Errorf("handler got Proxy-Connection header value %q", c)
 		}
-		// todo fix host header test
+		//todo fix host header test
 		//if g, e := r.Host, "some-name"; g != e {
 		//	t.Errorf("backend got Host header %q, want %q", g, e)
 		//}
@@ -63,29 +63,31 @@ func TestLBHeader(t *testing.T) {
 
 	u, _ := url.Parse(backend.URL)
 
-	var nodes = []Node{
-		{
-			*u,
-			true,
-			HealthCheck{
-				*u,
-				200,
-				backendResponse,
-			},
-		},
+	h:=HealthCheck{
+		*u,
+		200,
+		backendResponse,
+		1 * time.Second,
+	}
+	var nodes = []*Node{
+		NewNode(*u, h),
 	}
 
 	balancer := NewLoadBalancer(nodes)
 	balancer.BalanceAlg = func(req *http.Request) {
-		pick := balancer.Backends[balancer.req]
+		pick := balancer.Backends[balancer.roundRobinCnt]
 
-		if balancer.req >= uint32(len(balancer.Backends)-1) {
-			atomic.StoreUint32(&balancer.req, 0)
+		if balancer.roundRobinCnt >= uint32(len(balancer.Backends)-1) {
+			atomic.StoreUint32(&balancer.roundRobinCnt, 0)
 		} else {
-			atomic.AddUint32(&balancer.req, 1)
+			atomic.AddUint32(&balancer.roundRobinCnt, 1)
 		}
 		targetQuery := pick.RawQuery
 		req.URL.Scheme = pick.Scheme
+		fmt.Println("---")
+		fmt.Println(req.Header.Get("Host"))
+		fmt.Println("---")
+		//req.Header.Add("Host", req.URL.Host)
 		req.URL.Host = pick.Host
 		req.URL.Path = pick.Path + req.URL.Path
 		if targetQuery == "" || req.URL.RawQuery == "" {
@@ -105,6 +107,7 @@ func TestLBHeader(t *testing.T) {
 
 	getReq, _ := http.NewRequest("GET", frontend.URL, nil)
 	getReq.Host = "some-name"
+	getReq.Header.Set("Host", "some-name")
 	getReq.Header.Set("Connection", "close")
 	getReq.Header.Set("Te", "trailers")
 	getReq.Header.Set("Proxy-Connection", "should be deleted")
@@ -210,26 +213,24 @@ func TestLBNodeCrash(t *testing.T) {
 	u, _ := url.Parse(backend.URL)
 	fmt.Println(u)
 
-	var nodes = []Node{
-		{
-			*u,
-			true,
-			HealthCheck{
-				*u,
-				200,
-				backendResponse,
-			},
-		},
+	h:=HealthCheck{
+		*u,
+		200,
+		backendResponse,
+		1 * time.Second,
+	}
+	var nodes = []*Node{
+		NewNode(*u, h),
 	}
 
 	balancer := NewLoadBalancer(nodes)
 	balancer.BalanceAlg = func(req *http.Request) {
-		pick := balancer.Backends[balancer.req]
+		pick := balancer.Backends[balancer.roundRobinCnt]
 
-		if balancer.req >= uint32(len(balancer.Backends)-1) {
-			atomic.StoreUint32(&balancer.req, 0)
+		if balancer.roundRobinCnt >= uint32(len(balancer.Backends)-1) {
+			atomic.StoreUint32(&balancer.roundRobinCnt, 0)
 		} else {
-			atomic.AddUint32(&balancer.req, 1)
+			atomic.AddUint32(&balancer.roundRobinCnt, 1)
 		}
 		targetQuery := pick.RawQuery
 		req.URL.Scheme = pick.Scheme

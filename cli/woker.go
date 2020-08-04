@@ -10,6 +10,7 @@ import (
 	"net/textproto"
 	"net/url"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -20,24 +21,37 @@ type HealthCheck struct {
 	Endpoint           url.URL
 	ExpectedStatusCode int
 	ExpectedResponse   string
+	Timeout time.Duration
 }
 
 type Node struct {
 	url.URL
 	Alive       bool
 	HealthCheck HealthCheck
+	lock *sync.RWMutex
 }
 
+func NewNode(URL url.URL, healthCheck HealthCheck) *Node {
+	return &Node{URL: URL, Alive: false, HealthCheck: healthCheck, lock: &sync.RWMutex{}}
+}
+
+
+func(n*Node) IsAlive() bool{
+	return n.Alive
+}
+
+
 type BalanceAlg = func(req *http.Request)
+type NodeCheckFunc = func(ctx context.Context, node *Node)
 
 type loadBalancer struct {
-	AllowScheme    []string
-	Backends       []Node
+	Backends       []*Node
 	Transport      http.RoundTripper
 	BalanceAlg     BalanceAlg
-	CheckNodeAlive func(ctx context.Context, node *Node)
+	CheckNodeAlive NodeCheckFunc
+	Timeout time.Duration
 
-	req uint32
+	roundRobinCnt uint32 // this lb is max backend nodes 4294967295.
 }
 
 var hopHeaders = []string{
@@ -178,7 +192,7 @@ func (l *loadBalancer) RunCheckNode() {
 
 		for _, n := range l.Backends {
 			context.WithTimeout(ctx, time.Second*10)
-			go l.CheckNodeAlive(ctx, &n)
+			go l.CheckNodeAlive(ctx, n)
 		}
 		time.Sleep(5 * time.Minute)
 	}
@@ -199,12 +213,12 @@ func upgradeType(h http.Header) string {
 	return strings.ToLower(h.Get("Upgrade"))
 }
 
-func NewLoadBalancer(node []Node) *loadBalancer {
+func NewLoadBalancer(node []*Node) *loadBalancer {
 	return &loadBalancer{
-		AllowScheme: []string{"https", "http"},
-		Backends:    node,
-		Transport:   nil,
-		req:         uint32(0),
+		Backends:      node,
+		Transport:     nil,
+		roundRobinCnt: uint32(0),
+		Timeout: 10 * time.Second,
 	}
 }
 
@@ -223,40 +237,37 @@ func main() {
 		Host:   "localhost:3030",
 	}
 
-	var nodes = []Node{
-		{
-			URL:   u,
-			Alive: false,
-			HealthCheck: HealthCheck{
-				u,
-				200,
-				"<!DOCTYPE html>\n<html>\n<head>\n<title>Welcome to nginx!</title>\n<style>\n    body {\n        width: 35em;\n        margin: 0 auto;\n        font-family: Tahoma, Verdana, Arial, sans-serif;\n    }\n</style>\n</head>\n<body>\n<h1>Welcome to nginx!</h1>\n<p>If you see this page, the nginx web server is successfully installed and\nworking. Further configuration is required.</p>\n\n<p>For online documentation and support please refer to\n<a href=\"http://nginx.org/\">nginx.org</a>.<br/>\nCommercial support is available at\n<a href=\"http://nginx.com/\">nginx.com</a>.</p>\n\n<p><em>Thank you for using nginx.</em></p>\n</body>\n</html>\n",
-			},
-		},
-		{
-			URL:   u2,
-			Alive: false,
-			HealthCheck: HealthCheck{
-				u,
-				200,
-				"<!DOCTYPE html>\n<html>\n<head>\n<title>Welcome to nginx!</title>\n<style>\n    body {\n        width: 35em;\n        margin: 0 auto;\n        font-family: Tahoma, Verdana, Arial, sans-serif;\n    }\n</style>\n</head>\n<body>\n<h1>Welcome to nginx!</h1>\n<p>If you see this page, the nginx web server is successfully installed and\nworking. Further configuration is required.</p>\n\n<p>For online documentation and support please refer to\n<a href=\"http://nginx.org/\">nginx.org</a>.<br/>\nCommercial support is available at\n<a href=\"http://nginx.com/\">nginx.com</a>.</p>\n\n<p><em>Thank you for using nginx.</em></p>\n</body>\n</html>\n",
-			},
-		},
+	h:= HealthCheck{
+		u,
+		200,
+		"<!DOCTYPE html>\n<html>\n<head>\n<title>Welcome to nginx!</title>\n<style>\n    body {\n        width: 35em;\n        margin: 0 auto;\n        font-family: Tahoma, Verdana, Arial, sans-serif;\n    }\n</style>\n</head>\n<body>\n<h1>Welcome to nginx!</h1>\n<p>If you see this page, the nginx web server is successfully installed and\nworking. Further configuration is required.</p>\n\n<p>For online documentation and support please refer to\n<a href=\"http://nginx.org/\">nginx.org</a>.<br/>\nCommercial support is available at\n<a href=\"http://nginx.com/\">nginx.com</a>.</p>\n\n<p><em>Thank you for using nginx.</em></p>\n</body>\n</html>\n",
+		1  * time.Second,
+	}
+	var nodes = []*Node{
+		NewNode(u,h),
+		NewNode(u2,h),
+
 	}
 
 	l := NewLoadBalancer(nodes)
-	l.BalanceAlg = func(req *http.Request) {
-		pick := l.Backends[l.req]
+	//l.aa = func() {
+	//
+	//}
 
-		fmt.Println(l.req, uint32(len(l.Backends)-1))
-		if l.req >= uint32(len(l.Backends)-1) {
-			atomic.StoreUint32(&l.req, 0)
+	l.BalanceAlg = func(req *http.Request) {
+		ctx :=req.Context()
+		ctx, cancel := context.WithTimeout(ctx, l.Timeout)
+		defer cancel()
+
+		pick := l.Backends[l.roundRobinCnt]
+		if l.roundRobinCnt >= uint32(len(l.Backends)-1) {
+			atomic.StoreUint32(&l.roundRobinCnt, 0)
 		} else {
-			atomic.AddUint32(&l.req, 1)
+			atomic.AddUint32(&l.roundRobinCnt, 1)
 		}
-		fmt.Println(pick)
 		targetQuery := pick.RawQuery
 		req.URL.Scheme = pick.Scheme
+		req.Header.Add("Host", req.URL.Host)
 		req.URL.Host = pick.Host
 		req.URL.Path = pick.Path + req.URL.Path
 		if targetQuery == "" || req.URL.RawQuery == "" {
@@ -274,6 +285,9 @@ func main() {
 		fmt.Printf("check alive node  %v\n", node)
 		select {
 		case <-ctx.Done():
+			node.lock.Lock()
+			node.Alive = false
+			node.lock.Unlock()
 		default:
 			req, err := http.NewRequestWithContext(
 				ctx,
@@ -284,13 +298,17 @@ func main() {
 			if err != nil {
 				log.Println(err)
 				fmt.Printf("not alive node  %v\n", node)
+				node.lock.Lock()
 				node.Alive = false
+				node.lock.Unlock()
 				return
 			}
 			client := &http.Client{}
 			res, err := client.Do(req)
 			if err != nil {
+				node.lock.Lock()
 				node.Alive = false
+				node.lock.Unlock()
 				fmt.Printf("not alive node  %v\n", node)
 				log.Println(err)
 				return
@@ -300,17 +318,23 @@ func main() {
 			}()
 			if res.StatusCode != node.HealthCheck.ExpectedStatusCode {
 				fmt.Printf("not alive node  %v reason %s \n", node, "UnExpectedStatusCode")
+				node.lock.Lock()
 				node.Alive = false
+				node.lock.Unlock()
 				return
 			}
 			b, _ := ioutil.ReadAll(res.Body)
 			if string(b) != node.HealthCheck.ExpectedResponse {
 				fmt.Printf("not alive node  %v reason %s \n", node, "UnExpectedResponse")
+				node.lock.Lock()
 				node.Alive = false
+				node.lock.Unlock()
 				return
 			}
 
+			node.lock.Lock()
 			node.Alive = true
+			node.lock.Unlock()
 			fmt.Printf("alive node %v\n", node)
 			return
 		}
