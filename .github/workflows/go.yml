@@ -4,7 +4,12 @@ jobs:
 
   build:
     name: Build
-    runs-on: linux-latest
+    runs-on: ${{ matrix.os }}
+    strategy:
+      max-parallel: 10
+      matrix:
+        os: [ubuntu-16.04, ubuntu-18.04, ubuntu-20.04]
+
     steps:
       - name: Set up Go 1.14
         uses: actions/setup-go@v1
