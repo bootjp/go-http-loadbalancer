@@ -21,25 +21,23 @@ type HealthCheck struct {
 	Endpoint           url.URL
 	ExpectedStatusCode int
 	ExpectedResponse   string
-	Timeout time.Duration
+	Timeout            time.Duration
 }
 
 type Node struct {
 	url.URL
 	Alive       bool
 	HealthCheck HealthCheck
-	lock *sync.RWMutex
+	lock        *sync.RWMutex
 }
 
 func NewNode(URL url.URL, healthCheck HealthCheck) *Node {
 	return &Node{URL: URL, Alive: false, HealthCheck: healthCheck, lock: &sync.RWMutex{}}
 }
 
-
-func(n*Node) IsAlive() bool{
+func (n *Node) IsAlive() bool {
 	return n.Alive
 }
-
 
 type BalanceAlg = func(req *http.Request)
 type NodeCheckFunc = func(ctx context.Context, node *Node)
@@ -47,9 +45,8 @@ type NodeCheckFunc = func(ctx context.Context, node *Node)
 type loadBalancer struct {
 	Backends       []*Node
 	Transport      http.RoundTripper
-	BalanceAlg     BalanceAlg
 	CheckNodeAlive NodeCheckFunc
-	Timeout time.Duration
+	Timeout        time.Duration
 
 	roundRobinCnt uint32 // this lb is max backend nodes 4294967295.
 }
@@ -66,6 +63,34 @@ var hopHeaders = []string{
 	"Proxy-Connection",
 }
 
+func (l *loadBalancer) BalanceAlg(req *http.Request) {
+	origHost := req.Host
+	pick := l.Backends[l.roundRobinCnt]
+
+	if l.roundRobinCnt >= uint32(len(l.Backends)-1) {
+		atomic.StoreUint32(&l.roundRobinCnt, 0)
+	} else {
+		atomic.AddUint32(&l.roundRobinCnt, 1)
+	}
+	targetQuery := pick.RawQuery
+	req.URL.Scheme = pick.Scheme
+	fmt.Println("---")
+	fmt.Println(req.Host)
+	fmt.Println("---")
+	req.URL.Host = pick.Host
+
+	req.URL.Path = pick.Path + req.URL.Path
+	if targetQuery == "" || req.URL.RawQuery == "" {
+		req.URL.RawQuery = targetQuery + req.URL.RawQuery
+	} else {
+		req.URL.RawQuery = targetQuery + "&" + req.URL.RawQuery
+	}
+
+	if _, ok := req.Header["User-Agent"]; !ok {
+		req.Header.Set("User-Agent", "")
+	}
+	req.Host = origHost
+}
 func (l *loadBalancer) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	// inspired https://github.com/golang/go/blob/master/src/net/http/httputil/reverseproxy.go
 	log.Println(req.RemoteAddr, " ", req.Method, " ", req.URL)
@@ -218,7 +243,7 @@ func NewLoadBalancer(node []*Node) *loadBalancer {
 		Backends:      node,
 		Transport:     nil,
 		roundRobinCnt: uint32(0),
-		Timeout: 10 * time.Second,
+		Timeout:       10 * time.Second,
 	}
 }
 
@@ -237,16 +262,15 @@ func main() {
 		Host:   "localhost:3030",
 	}
 
-	h:= HealthCheck{
+	h := HealthCheck{
 		u,
 		200,
 		"<!DOCTYPE html>\n<html>\n<head>\n<title>Welcome to nginx!</title>\n<style>\n    body {\n        width: 35em;\n        margin: 0 auto;\n        font-family: Tahoma, Verdana, Arial, sans-serif;\n    }\n</style>\n</head>\n<body>\n<h1>Welcome to nginx!</h1>\n<p>If you see this page, the nginx web server is successfully installed and\nworking. Further configuration is required.</p>\n\n<p>For online documentation and support please refer to\n<a href=\"http://nginx.org/\">nginx.org</a>.<br/>\nCommercial support is available at\n<a href=\"http://nginx.com/\">nginx.com</a>.</p>\n\n<p><em>Thank you for using nginx.</em></p>\n</body>\n</html>\n",
-		1  * time.Second,
+		1 * time.Second,
 	}
 	var nodes = []*Node{
-		NewNode(u,h),
-		NewNode(u2,h),
-
+		NewNode(u, h),
+		NewNode(u2, h),
 	}
 
 	l := NewLoadBalancer(nodes)
@@ -254,31 +278,31 @@ func main() {
 	//
 	//}
 
-	l.BalanceAlg = func(req *http.Request) {
-		ctx :=req.Context()
-		ctx, cancel := context.WithTimeout(ctx, l.Timeout)
-		defer cancel()
-
-		pick := l.Backends[l.roundRobinCnt]
-		if l.roundRobinCnt >= uint32(len(l.Backends)-1) {
-			atomic.StoreUint32(&l.roundRobinCnt, 0)
-		} else {
-			atomic.AddUint32(&l.roundRobinCnt, 1)
-		}
-		targetQuery := pick.RawQuery
-		req.URL.Scheme = pick.Scheme
-		req.Header.Add("Host", req.URL.Host)
-		req.URL.Host = pick.Host
-		req.URL.Path = pick.Path + req.URL.Path
-		if targetQuery == "" || req.URL.RawQuery == "" {
-			req.URL.RawQuery = targetQuery + req.URL.RawQuery
-		} else {
-			req.URL.RawQuery = targetQuery + "&" + req.URL.RawQuery
-		}
-		if _, ok := req.Header["User-Agent"]; !ok {
-			req.Header.Set("User-Agent", "")
-		}
-	}
+	//l.BalanceAlg = func(req *http.Request) {
+	//	ctx := req.Context()
+	//	ctx, cancel := context.WithTimeout(ctx, l.Timeout)
+	//	defer cancel()
+	//
+	//	pick := l.Backends[l.roundRobinCnt]
+	//	if l.roundRobinCnt >= uint32(len(l.Backends)-1) {
+	//		atomic.StoreUint32(&l.roundRobinCnt, 0)
+	//	} else {
+	//		atomic.AddUint32(&l.roundRobinCnt, 1)
+	//	}
+	//	targetQuery := pick.RawQuery
+	//	req.URL.Scheme = pick.Scheme
+	//	req.Header.Add("Host", req.URL.Host)
+	//	req.URL.Host = pick.Host
+	//	req.URL.Path = pick.Path + req.URL.Path
+	//	if targetQuery == "" || req.URL.RawQuery == "" {
+	//		req.URL.RawQuery = targetQuery + req.URL.RawQuery
+	//	} else {
+	//		req.URL.RawQuery = targetQuery + "&" + req.URL.RawQuery
+	//	}
+	//	if _, ok := req.Header["User-Agent"]; !ok {
+	//		req.Header.Set("User-Agent", "")
+	//	}
+	//}
 
 	l.CheckNodeAlive = func(ctx context.Context, node *Node) {
 
