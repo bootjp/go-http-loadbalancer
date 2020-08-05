@@ -49,15 +49,12 @@ type loadBalance struct {
 }
 
 var hopHeaders = []string{
-	"connection",
-	"keep-alive",
-	"proxy-authenticate",
-	"proxy-authorization",
-	"te",
-	"trailers",
-	"transfer-encoding",
-	"upgrade",
+	"Connection",
 	"Proxy-Connection",
+	"Keep-Alive",
+	"Proxy-Authenticate",
+	"Proxy-Authorization",
+	"Upgrade",
 }
 
 type loadBalancer interface {

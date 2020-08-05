@@ -22,17 +22,19 @@ func TestLBHeader(t *testing.T) {
 		if len(r.TransferEncoding) > 0 {
 			t.Errorf("backend got unexpected TransferEncoding: %v", r.TransferEncoding)
 		}
+
 		// todo fix add X-Forwarded-For
 		//if r.Header.Get("X-Forwarded-For") == "" {
 		//	t.Errorf("didn't get X-Forwarded-For header")
 		//}
+
 		if c := r.Header.Get("Connection"); c != "" {
 			t.Errorf("handler got Connection header value %q", c)
 		}
-		// todo fix Te header value is trailers
-		//if c := r.Header.Get("Te"); c != "trailers" {
-		//	t.Errorf("handler got Te header value %q; want 'trailers'", c)
-		//}
+
+		if c := r.Header.Get("Te"); c != "trailers" {
+			t.Errorf("handler got Te header value %q; want 'trailers'", c)
+		}
 		if c := r.Header.Get("Upgrade"); c != "" {
 			t.Errorf("handler got Upgrade header value %q", c)
 		}
@@ -92,41 +94,52 @@ func TestLBHeader(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
+
 	if g, e := res.StatusCode, backendStatus; g != e {
 		t.Errorf("got res.StatusCode %d; expected %d", g, e)
 	}
+
 	if g, e := res.Header.Get("X-Foo"), "bar"; g != e {
 		t.Errorf("got X-Foo %q; expected %q", g, e)
 	}
+
 	if c := res.Header.Get("fakeHopHeader"); c != "" {
 		t.Errorf("got %s header value %q", "fakeHopHeader", c)
 	}
-	// todo fix Te header value is trailers
-	//if g, e := res.Header.Get("Trailers"), "not a special header field name"; g != e {
-	//	t.Errorf("header Trailers = %q; want %q", g, e)
-	//}
+
+	if g, e := res.Header.Get("Trailers"), "not a special header field name"; g != e {
+		t.Errorf("header Trailers = %q; want %q", g, e)
+	}
+
 	if g, e := len(res.Header["X-Multi-Value"]), 2; g != e {
 		t.Errorf("got %d X-Multi-Value header values; expected %d", g, e)
 	}
+
 	if g, e := len(res.Header["Set-Cookie"]), 1; g != e {
 		t.Fatalf("got %d SetCookies, want %d", g, e)
 	}
+
 	if g, e := res.Trailer, (http.Header{"X-Trailer": nil}); !reflect.DeepEqual(g, e) {
 		t.Errorf("before reading body, Trailer = %#v; want %#v", g, e)
 	}
+
 	if cookie := res.Cookies()[0]; cookie.Name != "flavor" {
 		t.Errorf("unexpected cookie %q", cookie.Name)
 	}
 	bodyBytes, _ := ioutil.ReadAll(res.Body)
+
 	if g, e := string(bodyBytes), backendResponse; g != e {
 		t.Errorf("got body %q; expected %q", g, e)
 	}
+
 	if g, e := res.Trailer.Get("X-Trailer"), "trailer_value"; g != e {
 		t.Errorf("Trailer(X-Trailer) = %q ; want %q", g, e)
 	}
+
 	if g, e := res.Trailer.Get("X-Unannounced-Trailer"), "unannounced_trailer_value"; g != e {
 		t.Errorf("Trailer(X-Unannounced-Trailer) = %q ; want %q", g, e)
 	}
+
 	if res.StatusCode != http.StatusOK {
 		t.Errorf("response given %v; want 200 StatusOK", res.Status)
 	}
