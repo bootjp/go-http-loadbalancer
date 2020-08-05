@@ -66,6 +66,21 @@ type loadBalancer interface {
 	NodeCheck(ctx context.Context, node *Node)
 }
 
+func (l loadBalance) pickAliveNode() []*Node {
+	var alive []*Node
+	for _, n := range l.Backends {
+		n.lock.RLock()
+		if !n.Alive {
+			n.lock.RUnlock()
+			continue
+		}
+		n.lock.RUnlock()
+		alive = append(alive, n)
+	}
+
+	return alive
+}
+
 func (l *loadBalance) NodeCheck(ctx context.Context, node *Node) {
 
 	fmt.Printf("check alive node  %v\n", node)
@@ -126,15 +141,22 @@ func (l *loadBalance) NodeCheck(ctx context.Context, node *Node) {
 	}
 }
 
-func (l *loadBalance) BalanceAlg(req *http.Request) {
-	origHost := req.Host
-	pick := l.Backends[l.roundRobinCnt]
+func (l *loadBalance) BalanceAlg(req *http.Request, aliveNodes []*Node) {
+	nodeCnt := uint32(len(aliveNodes))
+	if nodeCnt <= l.roundRobinCnt {
+		atomic.StoreUint32(&l.roundRobinCnt, 0)
+	}
+
+	pick := aliveNodes[l.roundRobinCnt]
 
 	if l.roundRobinCnt >= uint32(len(l.Backends)-1) {
 		atomic.StoreUint32(&l.roundRobinCnt, 0)
 	} else {
 		atomic.AddUint32(&l.roundRobinCnt, 1)
 	}
+
+	// apply nodes
+
 	targetQuery := pick.RawQuery
 	req.URL.Scheme = pick.Scheme
 	req.URL.Host = pick.Host
@@ -149,7 +171,6 @@ func (l *loadBalance) BalanceAlg(req *http.Request) {
 	if _, ok := req.Header["User-Agent"]; !ok {
 		req.Header.Set("User-Agent", "")
 	}
-	req.Host = origHost
 }
 func (l *loadBalance) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	// inspired https://github.com/golang/go/blob/master/src/net/http/httputil/reverseproxy.go
@@ -188,7 +209,15 @@ func (l *loadBalance) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	if outreq.Header == nil {
 		outreq.Header = make(http.Header) // Issue 33142: historical behavior was to always allocate
 	}
-	l.BalanceAlg(outreq)
+
+	// node is not available check
+	aliveNode := l.pickAliveNode()
+	if len(aliveNode) == 0 {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		return
+	}
+
+	l.BalanceAlg(outreq, aliveNode)
 	outreq.Close = false
 	reqUpType := upgradeType(outreq.Header)
 
