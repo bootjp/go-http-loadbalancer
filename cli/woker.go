@@ -37,6 +37,8 @@ func NewNode(URL url.URL, healthCheck HealthCheck) *Node {
 }
 
 func (n *Node) IsAlive() bool {
+	n.lock.RLock()
+	defer n.lock.RUnlock()
 	return n.Alive
 }
 
@@ -63,19 +65,34 @@ type loadBalancer interface {
 	NodeCheck(ctx context.Context, node *Node)
 }
 
-func (l loadBalance) pickAliveNode() []*Node {
+func (l *loadBalance) pickAliveNodes() []*Node {
 	var alive []*Node
 	for _, n := range l.Backends {
 		n.lock.RLock()
-		if !n.Alive {
-			n.lock.RUnlock()
+		if !n.IsAlive() {
 			continue
 		}
-		n.lock.RUnlock()
 		alive = append(alive, n)
 	}
 
 	return alive
+}
+
+func (l *loadBalance) selectNodeByRR(n []*Node) *Node {
+	nodeCnt := uint32(len(n))
+	if nodeCnt <= l.roundRobinCnt {
+		atomic.StoreUint32(&l.roundRobinCnt, 0)
+	}
+
+	pick := n[l.roundRobinCnt]
+
+	if l.roundRobinCnt >= uint32(len(l.Backends)-1) {
+		atomic.StoreUint32(&l.roundRobinCnt, 0)
+	} else {
+		atomic.AddUint32(&l.roundRobinCnt, 1)
+	}
+
+	return pick
 }
 
 func (l *loadBalance) NodeCheck(ctx context.Context, node *Node) {
@@ -208,7 +225,7 @@ func (l *loadBalance) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	}
 
 	// node is not available check
-	aliveNode := l.pickAliveNode()
+	aliveNode := l.pickAliveNodes()
 	if len(aliveNode) == 0 {
 		w.WriteHeader(http.StatusServiceUnavailable)
 		return

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"io/ioutil"
 	"net/http"
 	"net/http/httptest"
@@ -226,4 +227,40 @@ func TestLBNodeTimeout(t *testing.T) {
 	if res.StatusCode != http.StatusBadGateway {
 		t.Errorf("request to bad proxy = %v; want 502 StatusBadGateway", res.Status)
 	}
+}
+
+func TestLBNodePick(t *testing.T) {
+	const backendResponse = "I am the backend"
+
+	u, _ := url.Parse("http://localhost/aa")
+	u2, _ := url.Parse("http://localhost/bb")
+
+	h := HealthCheck{
+		*u,
+		200,
+		backendResponse,
+		1 * time.Second,
+	}
+
+	var nodes = []*Node{
+		NewNode(*u, h),
+		NewNode(*u2, h),
+	}
+	nodes[0].Alive = true
+	nodes[1].Alive = true
+
+	balancer := NewLoadBalancer(nodes)
+	nodes = balancer.pickAliveNodes()
+
+	cnt := map[string]int{}
+	for i := 0; i < 10000; i++ {
+		res := balancer.selectNodeByRR(nodes)
+		cnt[res.String()] += 1
+	}
+
+	if cnt[u.String()] != cnt[u2.String()] {
+		t.Errorf("round robin result miss match map 0 %v 1 %v", cnt[u.String()], cnt[u2.String()])
+	}
+
+	fmt.Println(cnt[u.String()], cnt[u2.String()])
 }
