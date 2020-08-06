@@ -264,3 +264,81 @@ func TestLBNodePick(t *testing.T) {
 
 	fmt.Println(cnt[u.String()], cnt[u2.String()])
 }
+
+func TestLBNodePickDown(t *testing.T) {
+	const backendResponse = "I am the backend"
+
+	u, _ := url.Parse("http://localhost/aa")
+	u2, _ := url.Parse("http://localhost/bb")
+
+	h := HealthCheck{
+		*u,
+		200,
+		backendResponse,
+		1 * time.Second,
+	}
+
+	var nodes = []*Node{
+		NewNode(*u, h),
+		NewNode(*u2, h),
+	}
+	nodes[0].Alive = false
+	nodes[1].Alive = true
+
+	balancer := NewLoadBalancer(nodes)
+	nodes = balancer.pickAliveNodes()
+
+	cnt := map[string]int{}
+	for i := 0; i < 10000; i++ {
+		res := balancer.selectNodeByRR(nodes)
+		cnt[res.String()] += 1
+	}
+
+	if cnt[u2.String()] != 10000 {
+		t.Errorf("round robin result miss match expect u2 10000 given %d", cnt[u2.String()])
+	}
+
+}
+
+//func TestLBNodePickAfterDown(t *testing.T) {
+//	const backendResponse = "I am the backend"
+//
+//	u, _ := url.Parse("http://localhost/aa")
+//	u2, _ := url.Parse("http://localhost/bb")
+//
+//	h := HealthCheck{
+//		*u,
+//		200,
+//		backendResponse,
+//		1 * time.Second,
+//	}
+//
+//	var nodes = []*Node{
+//		NewNode(*u, h),
+//		NewNode(*u2, h),
+//	}
+//
+//	nodes[0].Alive = true
+//	nodes[1].Alive = true
+//
+//	balancer := NewLoadBalancer(nodes)
+//	nodes = balancer.pickAliveNodes()
+//
+//	cnt := map[string]int{}
+//
+//	for i := 0; i < 10000; i++ {
+//		if nodes[1].IsAlive() && i < 1000 {
+//			nodes[1].lock.Lock()
+//			nodes[1].Alive = false
+//			nodes[1].lock.Unlock()
+//		}
+//		res := balancer.selectNodeByRR(nodes)
+//		cnt[res.String()] += 1
+//	}
+//
+//	fmt.Println(cnt[u.String()], cnt[u2.String()])
+//	//if cnt[u2.String()] != 10000 {
+//	//	t.Errorf("round robin result miss match expect u2 10000 given %d", cnt[u2.String()])
+//	//}
+//
+//}
