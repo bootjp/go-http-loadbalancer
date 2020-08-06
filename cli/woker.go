@@ -156,35 +156,21 @@ func (l *loadBalance) NodeCheck(ctx context.Context, node *Node) {
 }
 
 func (l *loadBalance) BalanceAlg(req *http.Request, aliveNodes []*Node) {
-	nodeCnt := uint32(len(aliveNodes))
-	if nodeCnt <= l.roundRobinCnt {
-		atomic.StoreUint32(&l.roundRobinCnt, 0)
-	}
-
-	pick := aliveNodes[l.roundRobinCnt]
-
-	if l.roundRobinCnt >= uint32(len(l.Backends)-1) {
-		atomic.StoreUint32(&l.roundRobinCnt, 0)
-	} else {
-		atomic.AddUint32(&l.roundRobinCnt, 1)
-	}
+	node := l.selectNodeByRR(aliveNodes)
 
 	// apply nodes
 
-	targetQuery := pick.RawQuery
-	req.URL.Scheme = pick.Scheme
-	req.URL.Host = pick.Host
+	targetQuery := node.RawQuery
+	req.URL.Scheme = node.Scheme
+	req.URL.Host = node.Host
 
-	req.URL.Path = pick.Path + req.URL.Path
+	req.URL.Path = node.Path + req.URL.Path
 	if targetQuery == "" || req.URL.RawQuery == "" {
 		req.URL.RawQuery = targetQuery + req.URL.RawQuery
 	} else {
 		req.URL.RawQuery = targetQuery + "&" + req.URL.RawQuery
 	}
 
-	if _, ok := req.Header["User-Agent"]; !ok {
-		req.Header.Set("User-Agent", "")
-	}
 }
 func (l *loadBalance) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	// inspired https://github.com/golang/go/blob/master/src/net/http/httputil/reverseproxy.go
@@ -260,6 +246,10 @@ func (l *loadBalance) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		outreq.Header.Set("Upgrade", reqUpType)
 	}
 
+	if _, ok := req.Header["User-Agent"]; !ok {
+		req.Header.Set("User-Agent", "")
+	}
+
 	res, err := transport.RoundTrip(outreq)
 	if err != nil {
 		w.WriteHeader(http.StatusBadGateway)
@@ -323,7 +313,7 @@ func (l *loadBalance) RunCheckNode() {
 		ctx := context.TODO()
 
 		for _, n := range l.Backends {
-			context.WithTimeout(ctx, time.Second*10)
+			context.WithTimeout(ctx, n.HealthCheck.Timeout)
 			go l.NodeCheck(ctx, n)
 		}
 		time.Sleep(5 * time.Minute)
