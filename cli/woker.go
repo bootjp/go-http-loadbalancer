@@ -246,8 +246,22 @@ func (l *loadBalance) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		outreq.Header.Set("Upgrade", reqUpType)
 	}
 
-	if _, ok := req.Header["User-Agent"]; !ok {
-		req.Header.Set("User-Agent", "")
+	if _, ok := outreq.Header["User-Agent"]; !ok {
+		outreq.Header.Set("User-Agent", "")
+	}
+
+	forward := outreq.Header.Get("X-Forwarded-For")
+	addr, _, err := net.SplitHostPort(req.RemoteAddr)
+	if err != nil {
+		log.Println(err)
+	}
+
+	switch forward {
+	case "":
+		outreq.Header.Add("X-Forwarded-For", addr)
+	default:
+		forward += ", " + addr
+		outreq.Header.Set("X-Forwarded-For", forward)
 	}
 
 	res, err := transport.RoundTrip(outreq)

@@ -23,11 +23,9 @@ func TestLBHeader(t *testing.T) {
 		if len(r.TransferEncoding) > 0 {
 			t.Errorf("backend got unexpected TransferEncoding: %v", r.TransferEncoding)
 		}
-
-		// todo fix add X-Forwarded-For
-		//if r.Header.Get("X-Forwarded-For") == "" {
-		//	t.Errorf("didn't get X-Forwarded-For header")
-		//}
+		if r.Header.Get("X-Forwarded-For") != "127.0.0.1, 127.0.0.1" {
+			t.Errorf("X-Forwarded-For header expect 127.0.0.1, 127.0.0.1 given %v", r.Header.Get("X-Forwarded-For"))
+		}
 
 		if c := r.Header.Get("Connection"); c != "" {
 			t.Errorf("handler got Connection header value %q", c)
@@ -86,6 +84,7 @@ func TestLBHeader(t *testing.T) {
 	getReq.Host = "some-name"
 	getReq.Header.Set("Connection", "close")
 	getReq.Header.Set("Te", "trailers")
+	getReq.Header.Set("X-Forwarded-For", "127.0.0.1")
 	getReq.Header.Set("Proxy-Connection", "should be deleted")
 	getReq.Header.Set("Upgrade", "foo")
 	getReq.Close = true
