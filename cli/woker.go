@@ -61,12 +61,12 @@ func (n *Node) StatusAlive(status bool) {
 }
 
 type loadBalance struct {
-	Backends  []*Node
-	Transport http.RoundTripper
-	Timeout   time.Duration
-
+	Backends     []*Node
+	Transport    http.RoundTripper
+	Timeout      time.Duration
 	ErrorHandler func(http.ResponseWriter, *http.Request, error)
 
+	mu            *sync.Mutex
 	roundRobinCnt uint32 // this lb is max backend nodes 4294967295.
 }
 
@@ -87,7 +87,13 @@ type LoadBalancer interface {
 }
 
 func (l *loadBalance) Run() error {
-
+	l.mu.Lock()
+	for _, backend := range l.Backends {
+		ctx := context.TODO()
+		l.NodeCheck(ctx, backend)
+	}
+	l.mu.Unlock()
+	go l.RunCheckNode()
 	return nil
 }
 
@@ -391,6 +397,8 @@ func NewLoadBalancer(node []*Node) *loadBalance {
 		Transport:     transport,
 		roundRobinCnt: uint32(0),
 		Timeout:       10 * time.Second,
+
+		mu: &sync.Mutex{},
 	}
 }
 
