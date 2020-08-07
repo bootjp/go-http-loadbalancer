@@ -11,6 +11,7 @@ import (
 	"net/textproto"
 	"net/url"
 	"os"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -382,23 +383,24 @@ func upgradeType(h http.Header) string {
 func NewLoadBalancer(node []*Node) *loadBalance {
 	transport := &http.Transport{
 		DialContext: (&net.Dialer{
-			Timeout:   10 * time.Second,
-			KeepAlive: 60 * time.Second,
+			Timeout:   1 * time.Second,
+			KeepAlive: 10 * time.Second,
 		}).DialContext,
 		ForceAttemptHTTP2:     true,
-		MaxIdleConns:          100,
-		IdleConnTimeout:       90 * time.Second,
-		TLSHandshakeTimeout:   10 * time.Second,
+		MaxIdleConns:          10000,
+		IdleConnTimeout:       2 * time.Second,
+		TLSHandshakeTimeout:   1 * time.Second,
 		ExpectContinueTimeout: 1 * time.Second,
 	}
+	transport.MaxIdleConnsPerHost = 10000
 
 	return &loadBalance{
-		Backends:      node,
-		Transport:     transport,
-		roundRobinCnt: uint32(0),
-		Timeout:       10 * time.Second,
+		Backends:  node,
+		Transport: transport,
+		Timeout:   1 * time.Second,
 
-		mu: &sync.Mutex{},
+		roundRobinCnt: uint32(0),
+		mu:            &sync.Mutex{},
 	}
 }
 
@@ -406,6 +408,9 @@ func NewLoadBalancer(node []*Node) *loadBalance {
 // run benchmark
 
 func main() {
+	cpus := runtime.NumCPU()
+	runtime.GOMAXPROCS(cpus * 4)
+
 	u := url.URL{
 		Scheme: "http",
 		Host:   "localhost:3000",
