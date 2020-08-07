@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/textproto"
 	"net/url"
+	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -78,10 +79,16 @@ var hopHeaders = []string{
 	"Upgrade",
 }
 
-type loadBalancer interface {
-	BalanceAlg(req *http.Request)
+type LoadBalancer interface {
+	BalanceAlg(req *http.Request, aliveNodes []*Node)
 	ServeHTTP(w http.ResponseWriter, req *http.Request)
 	NodeCheck(ctx context.Context, node *Node)
+	Run() error
+}
+
+func (l *loadBalance) Run() error {
+
+	return nil
 }
 
 func (l *loadBalance) defaultErrorHandler(w http.ResponseWriter, req *http.Request, err error) {
@@ -413,11 +420,15 @@ func main() {
 		NewNode(u2, h),
 	}
 
-	l := NewLoadBalancer(nodes)
-	go l.RunCheckNode()
-
-	err := http.ListenAndServe(":8080", l)
+	srv := NewLoadBalancer(nodes)
+	err := srv.Run()
 	if err != nil {
-		log.Fatalln(err)
+		logf("%s", err)
+	}
+
+	err = http.ListenAndServe(":8080", srv)
+	if err != nil {
+		logf("%s", err)
+		os.Exit(1)
 	}
 }
