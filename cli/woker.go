@@ -2,7 +2,7 @@ package main
 
 import (
 	"context"
-	"fmt"
+	"errors"
 	"io"
 	"io/ioutil"
 	"log"
@@ -18,6 +18,16 @@ import (
 	"golang.org/x/net/http/httpguts"
 )
 
+var Logger *log.Logger
+
+func logf(format string, v ...interface{}) {
+	if Logger == nil {
+		log.Printf(format, v...)
+		return
+	}
+	Logger.Printf(format, v...)
+}
+
 type HealthCheck struct {
 	Endpoint           url.URL
 	ExpectedStatusCode int
@@ -29,7 +39,8 @@ type Node struct {
 	url.URL
 	Alive       bool
 	HealthCheck HealthCheck
-	lock        *sync.RWMutex
+
+	lock *sync.RWMutex
 }
 
 func NewNode(URL url.URL, healthCheck HealthCheck) *Node {
@@ -42,10 +53,18 @@ func (n *Node) IsAlive() bool {
 	return n.Alive
 }
 
+func (n *Node) StatusAlive(status bool) {
+	n.lock.Lock()
+	defer n.lock.Unlock()
+	n.Alive = status
+}
+
 type loadBalance struct {
 	Backends  []*Node
 	Transport http.RoundTripper
 	Timeout   time.Duration
+
+	ErrorHandler func(http.ResponseWriter, *http.Request, error)
 
 	roundRobinCnt uint32 // this lb is max backend nodes 4294967295.
 }
@@ -63,6 +82,11 @@ type loadBalancer interface {
 	BalanceAlg(req *http.Request)
 	ServeHTTP(w http.ResponseWriter, req *http.Request)
 	NodeCheck(ctx context.Context, node *Node)
+}
+
+func (l *loadBalance) defaultErrorHandler(w http.ResponseWriter, req *http.Request, err error) {
+	logf("load balancer error %s", err)
+	w.WriteHeader(http.StatusBadGateway)
 }
 
 func (l *loadBalance) pickAliveNodes() []*Node {
@@ -94,14 +118,18 @@ func (l *loadBalance) selectNodeByRR(n []*Node) *Node {
 	return pick
 }
 
+func (l *loadBalance) getErrorHandler() func(http.ResponseWriter, *http.Request, error) {
+	if l.ErrorHandler != nil {
+		return l.ErrorHandler
+	}
+	return l.defaultErrorHandler
+}
+
 func (l *loadBalance) NodeCheck(ctx context.Context, node *Node) {
 
-	fmt.Printf("check alive node  %v\n", node)
 	select {
 	case <-ctx.Done():
-		node.lock.Lock()
-		node.Alive = false
-		node.lock.Unlock()
+		node.StatusAlive(false)
 	default:
 		req, err := http.NewRequestWithContext(
 			ctx,
@@ -110,46 +138,32 @@ func (l *loadBalance) NodeCheck(ctx context.Context, node *Node) {
 			nil,
 		)
 		if err != nil {
-			log.Println(err)
-			fmt.Printf("not alive node  %v\n", node)
-			node.lock.Lock()
-			node.Alive = false
-			node.lock.Unlock()
+			logf("%s", err)
+			node.StatusAlive(false)
 			return
 		}
 		client := &http.Client{}
 		res, err := client.Do(req)
 		if err != nil {
-			node.lock.Lock()
-			node.Alive = false
-			node.lock.Unlock()
-			fmt.Printf("not alive node  %v\n", node)
-			log.Println(err)
+			logf("%s", err)
+			node.StatusAlive(false)
 			return
 		}
 		defer func() {
 			err = res.Body.Close()
 		}()
 		if res.StatusCode != node.HealthCheck.ExpectedStatusCode {
-			fmt.Printf("not alive node  %v reason %s \n", node, "UnExpectedStatusCode")
-			node.lock.Lock()
-			node.Alive = false
-			node.lock.Unlock()
+			logf("%s", err)
+			node.StatusAlive(false)
 			return
 		}
 		b, _ := ioutil.ReadAll(res.Body)
 		if string(b) != node.HealthCheck.ExpectedResponse {
-			fmt.Printf("not alive node  %v reason %s \n", node, "UnExpectedResponse")
-			node.lock.Lock()
-			node.Alive = false
-			node.lock.Unlock()
+			node.StatusAlive(false)
 			return
 		}
 
-		node.lock.Lock()
-		node.Alive = true
-		node.lock.Unlock()
-		fmt.Printf("alive node %v\n", node)
+		node.StatusAlive(true)
 		return
 	}
 }
@@ -157,13 +171,11 @@ func (l *loadBalance) NodeCheck(ctx context.Context, node *Node) {
 func (l *loadBalance) BalanceAlg(req *http.Request, aliveNodes []*Node) {
 	node := l.selectNodeByRR(aliveNodes)
 
-	// apply nodes
-
-	targetQuery := node.RawQuery
 	req.URL.Scheme = node.Scheme
 	req.URL.Host = node.Host
-
 	req.URL.Path = node.Path + req.URL.Path
+
+	targetQuery := node.RawQuery
 	if targetQuery == "" || req.URL.RawQuery == "" {
 		req.URL.RawQuery = targetQuery + req.URL.RawQuery
 	} else {
@@ -212,7 +224,7 @@ func (l *loadBalance) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	// node is not available check
 	aliveNode := l.pickAliveNodes()
 	if len(aliveNode) == 0 {
-		w.WriteHeader(http.StatusServiceUnavailable)
+		l.getErrorHandler()(w, req, errors.New("no node available"))
 		return
 	}
 
@@ -249,24 +261,24 @@ func (l *loadBalance) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		outreq.Header.Set("User-Agent", "")
 	}
 
-	forward := outreq.Header.Get("X-Forwarded-For")
+	xff := outreq.Header.Get("X-Forwarded-For")
 	addr, _, err := net.SplitHostPort(req.RemoteAddr)
 	if err != nil {
-		log.Println(err)
+		l.getErrorHandler()(w, req, err)
+		return
 	}
 
-	switch forward {
+	switch xff {
 	case "":
 		outreq.Header.Add("X-Forwarded-For", addr)
 	default:
-		forward += ", " + addr
-		outreq.Header.Set("X-Forwarded-For", forward)
+		xff += ", " + addr
+		outreq.Header.Set("X-Forwarded-For", xff)
 	}
 
 	res, err := transport.RoundTrip(outreq)
 	if err != nil {
-		w.WriteHeader(http.StatusBadGateway)
-		log.Println(err)
+		l.getErrorHandler()(w, req, err)
 		return
 	}
 
@@ -296,9 +308,15 @@ func (l *loadBalance) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	w.WriteHeader(res.StatusCode)
 
 	if _, err = io.Copy(w, res.Body); err != nil {
-		log.Println(err)
+		l.getErrorHandler()(w, req, err)
+		return
 	}
-	res.Body.Close()
+	defer func() {
+		if err = res.Body.Close(); err != nil {
+			l.getErrorHandler()(w, req, err)
+			return
+		}
+	}()
 
 	if len(res.Trailer) > 0 {
 		// Force chunking if we saw a response trailer.
