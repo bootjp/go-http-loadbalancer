@@ -395,7 +395,6 @@ func NewLoadBalancer(node []*Node) *loadBalance {
 }
 
 // todo
-// error handling
 // run benchmark
 
 func main() {
