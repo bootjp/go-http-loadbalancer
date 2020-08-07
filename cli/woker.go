@@ -68,7 +68,6 @@ type loadBalancer interface {
 func (l *loadBalance) pickAliveNodes() []*Node {
 	var alive []*Node
 	for _, n := range l.Backends {
-		n.lock.RLock()
 		if !n.IsAlive() {
 			continue
 		}
