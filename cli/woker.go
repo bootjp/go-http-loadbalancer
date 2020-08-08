@@ -391,8 +391,9 @@ func NewLoadBalancer(node []*Node) *loadBalance {
 		IdleConnTimeout:       2 * time.Second,
 		TLSHandshakeTimeout:   1 * time.Second,
 		ExpectContinueTimeout: 1 * time.Second,
+		MaxIdleConnsPerHost:   10000,
+		MaxConnsPerHost:       -1,
 	}
-	transport.MaxIdleConnsPerHost = 10000
 
 	return &loadBalance{
 		Backends:  node,
