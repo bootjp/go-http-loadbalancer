@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"reflect"
+	"sync"
 	"testing"
 	"time"
 )
@@ -210,6 +211,7 @@ func TestLBNodeTimeout(t *testing.T) {
 	nodes[0].Alive = true
 
 	balancer := NewLoadBalancer(nodes)
+	balancer.Timeout = 2 * time.Second
 	frontend := httptest.NewServer(balancer)
 	defer frontend.Close()
 	frontendClient := frontend.Client()
@@ -223,8 +225,9 @@ func TestLBNodeTimeout(t *testing.T) {
 	res.Body.Close()
 
 	// todo change to gateway timeout
+	fmt.Println(res.StatusCode)
 	if res.StatusCode != http.StatusBadGateway {
-		t.Errorf("request to bad proxy = %v; want 502 StatusBadGateway", res.Status)
+		t.Errorf("request to bad proxy = %v; want 504 StatusGatewayTimeout", res.Status)
 	}
 }
 
@@ -261,7 +264,49 @@ func TestLBNodePick(t *testing.T) {
 		t.Errorf("round robin result miss match map 0 %v 1 %v", cnt[u.String()], cnt[u2.String()])
 	}
 
-	fmt.Println(cnt[u.String()], cnt[u2.String()])
+}
+
+func TestNodePickAsync(t *testing.T) {
+	u, _ := url.Parse("http://localhost/aa")
+	u2, _ := url.Parse("http://localhost/bb")
+
+	h := HealthCheck{
+		*u,
+		200,
+		"backendResponse",
+		1 * time.Second,
+	}
+
+	var nodes = []*Node{
+		NewNode(*u, h),
+		NewNode(*u2, h),
+	}
+	nodes[0].Alive = true
+	nodes[1].Alive = true
+
+	balancer := NewLoadBalancer(nodes)
+	nodes = balancer.pickAliveNodes()
+
+	wg := &sync.WaitGroup{}
+	mu := &sync.Mutex{}
+	res := map[string]int{}
+	for i := 0; i < 100000; i++ {
+		wg.Add(1)
+		go func() {
+			rr := balancer.selectNodeByRR(nodes)
+			mu.Lock()
+			res[rr.String()] += 1
+			mu.Unlock()
+			wg.Done()
+		}()
+
+	}
+
+	wg.Wait()
+	for k, v := range res {
+		fmt.Println(k, v)
+	}
+
 }
 
 func TestLBNodePickDown(t *testing.T) {
@@ -347,8 +392,68 @@ func TestLBNodePickAfterDown(t *testing.T) {
 
 }
 
-func TestF(t *testing.T) {
-	target := []int{1}
-	println(len(target))
+//func TestLBNodePickAfterDownAsync(t *testing.T) {
+//	const backendResponse = "I am the backend"
+//
+//	u, _ := url.Parse("http://localhost/aa")
+//	u2, _ := url.Parse("http://localhost/bb")
+//
+//	h := HealthCheck{
+//		*u,
+//		200,
+//		backendResponse,
+//		1 * time.Second,
+//	}
+//
+//	var nodes = []*Node{
+//		NewNode(*u, h),
+//		NewNode(*u2, h),
+//	}
+//
+//	nodes[0].Alive = true
+//	nodes[1].Alive = true
+//
+//	balancer := NewLoadBalancer(nodes)
+//
+//	wg := &sync.WaitGroup{}
+//	mu := &sync.Mutex{}
+//	res := map[string]int{}
+//	for i := uint32(0); atomic.LoadUint32(&i) < 10000; atomic.AddUint32(&i, 1) {
+//
+//		wg.Add(1)
+//		go func(i *uint32) {
+//
+//			//if atomic.LoadUint32(i) == 1000 {
+//			//	nodes[1].StatusAlive(false)
+//			//}
+//			//if atomic.LoadUint32(i) == 9000 {
+//			//	nodes[0].StatusAlive(false)
+//			//	nodes[1].StatusAlive(true)
+//			//}
+//
+//			aliveNodes := balancer.pickAliveNodes()
+//
+//			rr := balancer.selectNodeByRR(aliveNodes)
+//			mu.Lock()
+//			res[rr.String()] += 1
+//			mu.Unlock()
+//			wg.Done()
+//		}(&i)
+//
+//	}
+//
+//	wg.Wait()
+//	//if res[u2.String()] != 1500 {
+//	//	t.Errorf("round robin result miss match expect u2 1500 given %d", res[u2.String()])
+//	//}
+//	//if res[u.String()] != 8500 {
+//	//	t.Errorf("round robin result miss match expect u1 8500 given %d", res[u.String()])
+//	//}
+//
+//}
 
-}
+//func TestF(t *testing.T) {
+//	target := []int{1}
+//	println(len(target))
+//
+//}

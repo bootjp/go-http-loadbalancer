@@ -208,15 +208,9 @@ func (l *loadBalance) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		go func() {
 			select {
 			case <-notifyChan:
-				w.WriteHeader(http.StatusGatewayTimeout)
 				cancel()
 			case <-ctx.Done():
-				w.WriteHeader(http.StatusGatewayTimeout)
-				return
-			default:
-				return
 			}
-
 		}()
 	}
 
