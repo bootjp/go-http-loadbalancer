@@ -11,10 +11,8 @@ import (
 	"net/textproto"
 	"net/url"
 	"os"
-	"runtime"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"golang.org/x/net/http/httpguts"
@@ -68,7 +66,7 @@ type loadBalance struct {
 	ErrorHandler func(http.ResponseWriter, *http.Request, error)
 
 	mu            *sync.Mutex
-	roundRobinCnt uint32 // this lb is max backend nodes 4294967295.
+	roundRobinCnt uint64 // this lb is max backend nodes 4294967295.
 }
 
 var hopHeaders = []string{
@@ -80,6 +78,13 @@ var hopHeaders = []string{
 	"Upgrade",
 }
 
+type RoundRobin struct {
+}
+
+type BalanceAlg interface {
+	BalanceAlg(req *http.Request, aliveNodes []*Node)
+}
+
 type LoadBalancer interface {
 	BalanceAlg(req *http.Request, aliveNodes []*Node)
 	ServeHTTP(w http.ResponseWriter, req *http.Request)
@@ -88,12 +93,10 @@ type LoadBalancer interface {
 }
 
 func (l *loadBalance) Run() error {
-	l.mu.Lock()
 	for _, backend := range l.Backends {
 		ctx := context.TODO()
 		l.NodeCheck(ctx, backend)
 	}
-	l.mu.Unlock()
 	go l.RunCheckNode()
 	return nil
 }
@@ -116,20 +119,10 @@ func (l *loadBalance) pickAliveNodes() []*Node {
 }
 
 func (l *loadBalance) selectNodeByRR(n []*Node) *Node {
-	nodeCnt := uint32(len(n))
-	if nodeCnt <= l.roundRobinCnt {
-		atomic.StoreUint32(&l.roundRobinCnt, 0)
-	}
-
-	pick := n[l.roundRobinCnt]
-
-	if l.roundRobinCnt >= uint32(len(l.Backends)-1) {
-		atomic.StoreUint32(&l.roundRobinCnt, 0)
-	} else {
-		atomic.AddUint32(&l.roundRobinCnt, 1)
-	}
-
-	return pick
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.roundRobinCnt = l.roundRobinCnt + 1
+	return n[(l.roundRobinCnt-1)%uint64(len(n))]
 }
 
 func (l *loadBalance) getErrorHandler() func(http.ResponseWriter, *http.Request, error) {
@@ -400,7 +393,7 @@ func NewLoadBalancer(node []*Node) *loadBalance {
 		Transport: transport,
 		Timeout:   1 * time.Second,
 
-		roundRobinCnt: uint32(0),
+		roundRobinCnt: uint64(0),
 		mu:            &sync.Mutex{},
 	}
 }
@@ -409,8 +402,6 @@ func NewLoadBalancer(node []*Node) *loadBalance {
 // run benchmark
 
 func main() {
-	cpus := runtime.NumCPU()
-	runtime.GOMAXPROCS(cpus * 4)
 
 	u := url.URL{
 		Scheme: "http",

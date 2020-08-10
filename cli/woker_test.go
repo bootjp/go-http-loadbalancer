@@ -346,3 +346,9 @@ func TestLBNodePickAfterDown(t *testing.T) {
 	}
 
 }
+
+func TestF(t *testing.T) {
+	target := []int{1}
+	println(len(target))
+
+}
