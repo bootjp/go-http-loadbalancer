@@ -15,6 +15,8 @@ import (
 	"sync"
 	"time"
 
+	//_ "net/http/pprof"
+
 	"golang.org/x/net/http/httpguts"
 )
 
@@ -194,10 +196,6 @@ func (l *loadBalance) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	// inspired https://github.com/golang/go/blob/master/src/net/http/httputil/reverseproxy.go
 	transport := l.Transport
 
-	if transport == nil {
-		transport = http.DefaultTransport
-	}
-
 	ctx := req.Context()
 
 	if cn, ok := w.(http.CloseNotifier); ok {
@@ -342,7 +340,7 @@ func (l *loadBalance) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 
 func (l *loadBalance) RunCheckNode() {
 	for {
-		ctx := context.TODO()
+		ctx := context.Background()
 
 		for _, n := range l.Backends {
 			context.WithTimeout(ctx, n.HealthCheck.Timeout)
