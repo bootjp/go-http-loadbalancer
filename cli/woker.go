@@ -20,6 +20,7 @@ import (
 	"golang.org/x/net/http/httpguts"
 )
 
+// Logger is loadblancer error log logger.
 var Logger *log.Logger
 
 func logf(format string, v ...interface{}) {
@@ -223,6 +224,7 @@ func (l *loadBalance) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	// node is not available check
 	aliveNode := l.pickAliveNodes()
 	if len(aliveNode) == 0 {
+		w.WriteHeader(503)
 		l.getErrorHandler()(w, req, errors.New("no node available"))
 		return
 	}

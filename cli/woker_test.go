@@ -257,7 +257,7 @@ func TestLBNodePick(t *testing.T) {
 	cnt := map[string]int{}
 	for i := 0; i < 10000; i++ {
 		res := balancer.selectNodeByRR(nodes)
-		cnt[res.String()] += 1
+		cnt[res.String()]++
 	}
 
 	if cnt[u.String()] != cnt[u2.String()] {
@@ -295,7 +295,7 @@ func TestNodePickAsync(t *testing.T) {
 		go func() {
 			rr := balancer.selectNodeByRR(nodes)
 			mu.Lock()
-			res[rr.String()] += 1
+			res[rr.String()]++
 			mu.Unlock()
 			wg.Done()
 		}()
@@ -335,7 +335,7 @@ func TestLBNodePickDown(t *testing.T) {
 	cnt := map[string]int{}
 	for i := 0; i < 10000; i++ {
 		res := balancer.selectNodeByRR(nodes)
-		cnt[res.String()] += 1
+		cnt[res.String()]++
 	}
 
 	if cnt[u2.String()] != 10000 {
@@ -380,7 +380,7 @@ func TestLBNodePickAfterDown(t *testing.T) {
 		}
 		aliveNodes := balancer.pickAliveNodes()
 		res := balancer.selectNodeByRR(aliveNodes)
-		cnt[res.String()] += 1
+		cnt[res.String()]++
 	}
 
 	if cnt[u2.String()] != 1500 {
